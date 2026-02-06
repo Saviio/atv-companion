@@ -143,7 +143,7 @@ Apple TV Companion 协议的 TypeScript SDK - 扫描、配对和远程控制 App
 
 本项目是 [pyatv](https://github.com/postlund/pyatv) 中 Companion 协议实现的 TypeScript 移植版本。
 
-**代码由 Claude (Anthropic AI) 生成**
+**代码由 AI (cc) 生成**
 
 原始 Python 代码来自: [pyatv](https://github.com/postlund/pyatv) by @postlund
 
