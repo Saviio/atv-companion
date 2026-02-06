@@ -1,0 +1,60 @@
+{
+  "name": "atv-companion",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Apple TV Companion protocol - scan, pair, and remote control",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "lint": "tsc --noEmit",
+    "example:scan": "npx tsx examples/scan.ts",
+    "example:pair": "npx tsx examples/pair.ts",
+    "example:remote": "npx tsx examples/remote-control.ts",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "apple-tv",
+    "appletv",
+    "companion",
+    "remote-control",
+    "deeplink",
+    "homekit",
+    "airplay"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^0.5.0",
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0",
+    "bonjour-service": "^1.2.0",
+    "js-srp6a": "^1.0.2",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/uuid": "^11.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
