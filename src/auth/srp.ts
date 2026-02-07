@@ -7,7 +7,6 @@
  * Ported from: pyatv/auth/hap_srp.py
  */
 
-import { default as srp6a } from 'js-srp6a';
 import { v4 as uuidv4 } from 'uuid';
 import {
   generateEd25519KeyPair,
@@ -63,7 +62,7 @@ export class SRPAuthHandler {
   private signingKey: { privateKey: Buffer; publicKey: Buffer } | null = null;
   private verifyKey: { privateKey: Buffer; publicKey: Buffer } | null = null;
 
-  private srpClient: ReturnType<typeof srp6a.createSRPClient> | null = null;
+  private srpClient: Awaited<ReturnType<typeof import('js-srp6a').createSRPClient>> | null = null;
   private srpSession: { key: string; proof: string } | null = null;
   private sessionKey: Buffer | null = null;
   private sharedSecret: Buffer | null = null;
@@ -179,7 +178,10 @@ export class SRPAuthHandler {
       throw new Error('Keys not initialized');
     }
 
-    this.srpClient = srp6a.createSRPClient('SHA-512', 3072);
+    // js-srp6a is built with Bun and has ESM syntax but no "type": "module",
+    // causing Node.js ESM loader to fail. Use dynamic import for compatibility.
+    const { createSRPClient } = await import('js-srp6a');
+    this.srpClient = createSRPClient('SHA-512', 3072);
     this.pin = pin;
 
     // Generate ephemeral keys (a, A) - use signing key private bytes as the secret

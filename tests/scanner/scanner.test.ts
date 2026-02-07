@@ -38,7 +38,7 @@ describe('supportsPairing', () => {
       host: '192.168.1.100',
       port: 49152,
       properties: {
-        rpfl: '0x200', // PAIRING_WITH_PIN_SUPPORTED_MASK
+        rpfl: '0x4000', // PAIRING_WITH_PIN_SUPPORTED_MASK
       },
     };
     expect(supportsPairing(device)).toBe(true);
@@ -50,7 +50,7 @@ describe('supportsPairing', () => {
       host: '192.168.1.100',
       port: 49152,
       properties: {
-        rpfl: '0x202', // PAIRING_DISABLED_MASK | PAIRING_WITH_PIN_SUPPORTED_MASK
+        rpfl: '0x4004', // PAIRING_DISABLED_MASK | PAIRING_WITH_PIN_SUPPORTED_MASK
       },
     };
     expect(supportsPairing(device)).toBe(false);
@@ -86,7 +86,7 @@ describe('isPairingDisabled', () => {
       host: '192.168.1.100',
       port: 49152,
       properties: {
-        rpfl: '0x02', // PAIRING_DISABLED_MASK
+        rpfl: '0x04', // PAIRING_DISABLED_MASK
       },
     };
     expect(isPairingDisabled(device)).toBe(true);
@@ -98,7 +98,7 @@ describe('isPairingDisabled', () => {
       host: '192.168.1.100',
       port: 49152,
       properties: {
-        rpfl: '0x200', // PAIRING_WITH_PIN_SUPPORTED_MASK
+        rpfl: '0x4000', // PAIRING_WITH_PIN_SUPPORTED_MASK
       },
     };
     expect(isPairingDisabled(device)).toBe(false);
