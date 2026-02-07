@@ -23,6 +23,7 @@ export {
 
 // Authentication
 export { SRPAuthHandler } from './auth/srp.js';
+export { serializeCredentials, deserializeCredentials } from './auth/credentials.js';
 export type { HapCredentials } from './auth/credentials.js';
 
 // Support modules
