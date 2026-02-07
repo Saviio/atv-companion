@@ -37,9 +37,9 @@ export interface ScannerOptions {
 /** Companion protocol service type */
 const COMPANION_SERVICE_TYPE = 'companion-link';
 
-/** Pairing flags from rpfl property */
-const PAIRING_DISABLED_MASK = 0x02;
-const PAIRING_WITH_PIN_SUPPORTED_MASK = 0x200;
+/** Pairing flags from rpfl property (based on pyatv implementation) */
+const PAIRING_DISABLED_MASK = 0x04;
+const PAIRING_WITH_PIN_SUPPORTED_MASK = 0x4000;
 
 /**
  * Parse device model from rpmd property
