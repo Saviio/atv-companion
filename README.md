@@ -23,6 +23,9 @@ Original Python code forked from: [pyatv](https://github.com/postlund/pyatv) by 
 - **Remote Control**: Send HID commands (Up, Down, Left, Right, Menu, Select, Home, etc.)
 - **Media Control**: Play, Pause, Next/Previous track, Volume control
 - **App Launch**: Launch apps by bundle ID or deep link URL
+- **Wake and Sleep**: Send release-only wake and sleep HID commands
+- **Bounded Operations**: Cancel or time-limit connections and commands with `AbortSignal`
+- **Wake Traffic**: Send bounded TCP knock traffic to explicitly selected compatibility ports
 - **Event Subscription**: Subscribe to device events
 
 ### Installation
@@ -96,6 +99,36 @@ await api.launchApp('com.apple.TVWatchList');
 await api.disconnect();
 ```
 
+#### 4. Bounded wake and deep link
+
+```typescript
+import {
+  CompanionAPI,
+  DEFAULT_WAKE_COMPATIBILITY_PORTS,
+  knock,
+} from 'atv-companion';
+
+const controller = new AbortController();
+const api = new CompanionAPI(host, companionPort, credentials);
+
+await knock(host, {
+  ports: [companionPort, ...DEFAULT_WAKE_COMPATIBILITY_PORTS],
+  timeoutMs: 1000,
+  signal: controller.signal,
+});
+await api.connect({ timeoutMs: 5000, signal: controller.signal });
+await api.wake({ timeoutMs: 3000, signal: controller.signal });
+await api.launchApp(originalDeepLink, {
+  timeoutMs: 3000,
+  signal: controller.signal,
+});
+await api.disconnect();
+```
+
+`DEFAULT_WAKE_COMPATIBILITY_PORTS` mirrors pyatv's compatibility wake traffic.
+Those ports are not fixed Apple Companion endpoints and must not be used as a
+replacement for the dynamic Companion port discovered through mDNS.
+
 ### API Reference
 
 #### HidCommand
@@ -154,6 +187,9 @@ Apple TV Companion 协议的 TypeScript SDK - 扫描、配对和远程控制 App
 - **遥控器**: 发送 HID 命令 (上、下、左、右、菜单、选择、主页等)
 - **媒体控制**: 播放、暂停、上/下一曲、音量控制
 - **启动应用**: 通过 Bundle ID 或深度链接 URL 启动应用
+- **唤醒与休眠**: 发送 release-only 的 Wake / Sleep HID 命令
+- **有界操作**: 使用 `AbortSignal` 取消连接与命令，或为其设置超时
+- **唤醒流量**: 向调用方明确选择的兼容端口发送有界 TCP Knock
 - **事件订阅**: 订阅设备事件
 
 ### 安装
@@ -226,6 +262,36 @@ await api.launchApp('com.apple.TVWatchList');
 
 await api.disconnect();
 ```
+
+#### 4. 有界唤醒与 DeepLink
+
+```typescript
+import {
+  CompanionAPI,
+  DEFAULT_WAKE_COMPATIBILITY_PORTS,
+  knock,
+} from 'atv-companion';
+
+const controller = new AbortController();
+const api = new CompanionAPI(host, companionPort, credentials);
+
+await knock(host, {
+  ports: [companionPort, ...DEFAULT_WAKE_COMPATIBILITY_PORTS],
+  timeoutMs: 1000,
+  signal: controller.signal,
+});
+await api.connect({ timeoutMs: 5000, signal: controller.signal });
+await api.wake({ timeoutMs: 3000, signal: controller.signal });
+await api.launchApp(originalDeepLink, {
+  timeoutMs: 3000,
+  signal: controller.signal,
+});
+await api.disconnect();
+```
+
+`DEFAULT_WAKE_COMPATIBILITY_PORTS` 沿用 pyatv 的兼容唤醒流量策略。这些端口
+不是 Apple 固定的 Companion endpoint，不能替代通过 mDNS 发现的动态
+Companion 端口。
 
 ### API 参考
 
