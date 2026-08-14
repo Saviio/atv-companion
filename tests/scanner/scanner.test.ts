@@ -2,9 +2,10 @@
  * Scanner module tests
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   AppleTVScanner,
+  scan,
   supportsPairing,
   isPairingDisabled,
   type AppleTVDevice,
@@ -28,6 +29,17 @@ describe('AppleTVScanner', () => {
     expect(scanner.on).toBeDefined();
     expect(scanner.emit).toBeDefined();
     scanner.destroy();
+  });
+
+  it('destroys an active scan when it is aborted', async () => {
+    const destroy = vi.spyOn(AppleTVScanner.prototype, 'destroy');
+    const controller = new AbortController();
+    const scanning = scan({ timeout: 10_000, signal: controller.signal });
+
+    controller.abort(new Error('cancelled'));
+
+    await expect(scanning).rejects.toMatchObject({ name: 'AbortError' });
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });
 

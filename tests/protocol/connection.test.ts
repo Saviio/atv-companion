@@ -45,6 +45,17 @@ describe('CompanionConnection', () => {
     conn.close();
   });
 
+  it('should reject an already aborted connection without opening a socket', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled'));
+    const conn = new CompanionConnection('127.0.0.1', serverPort);
+
+    await expect(
+      conn.connect({ signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(conn.connected).toBe(false);
+  });
+
   it('should send frame to server', async () => {
     const conn = new CompanionConnection('127.0.0.1', serverPort);
     await conn.connect();
