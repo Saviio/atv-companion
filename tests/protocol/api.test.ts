@@ -5,6 +5,7 @@ import {
   CompanionConnection,
   CompanionProtocol,
   HidCommand,
+  MediaControlCommand,
   SystemStatus,
 } from '../../src/index.js';
 
@@ -19,6 +20,7 @@ interface CompanionApiTestAccess {
 interface CompanionApiLifecycleTestAccess {
   touchStart(): Promise<void>;
   sessionStart(): Promise<void>;
+  gracefulDisconnect(): Promise<void>;
 }
 
 describe('CompanionAPI', () => {
@@ -62,6 +64,44 @@ describe('CompanionAPI', () => {
       '_launchApp',
       { _urlS: deeplink },
       undefined
+    );
+  });
+
+  it('threads cancellation options through remote commands', async () => {
+    const api = new CompanionAPI('127.0.0.1', 12345);
+    const sendCommand = vi
+      .spyOn(api as unknown as CompanionApiTestAccess, 'sendCommand')
+      .mockResolvedValue({});
+    const controller = new AbortController();
+    const options = { timeoutMs: 250, signal: controller.signal };
+
+    await api.pressButton(HidCommand.Select, options);
+    await api.play(options);
+    await api.pause(options);
+
+    expect(sendCommand).toHaveBeenNthCalledWith(
+      1,
+      '_hidC',
+      { _hBtS: 1, _hidC: HidCommand.Select },
+      options
+    );
+    expect(sendCommand).toHaveBeenNthCalledWith(
+      2,
+      '_hidC',
+      { _hBtS: 2, _hidC: HidCommand.Select },
+      options
+    );
+    expect(sendCommand).toHaveBeenNthCalledWith(
+      3,
+      '_mcc',
+      { _mcc: MediaControlCommand.Play },
+      options
+    );
+    expect(sendCommand).toHaveBeenNthCalledWith(
+      4,
+      '_mcc',
+      { _mcc: MediaControlCommand.Pause },
+      options
     );
   });
 
@@ -124,6 +164,45 @@ describe('CompanionAPI', () => {
 
     await expect(api.connect()).rejects.toThrow('first failure');
     await expect(api.connect()).resolves.toBeUndefined();
+    expect(start).toHaveBeenCalledTimes(2);
+    await api.disconnect();
+  });
+
+  it('waits for an active disconnect before reconnecting', async () => {
+    let releaseDisconnect: (() => void) | undefined;
+    const start = vi.spyOn(CompanionProtocol.prototype, 'start').mockResolvedValue();
+    vi.spyOn(CompanionConnection.prototype, 'connected', 'get').mockReturnValue(true);
+    vi.spyOn(CompanionAPI.prototype, 'systemInfo').mockResolvedValue();
+    vi.spyOn(CompanionAPI.prototype, 'subscribeEvent').mockResolvedValue();
+    vi.spyOn(
+      CompanionAPI.prototype as unknown as CompanionApiLifecycleTestAccess,
+      'touchStart'
+    ).mockResolvedValue();
+    vi.spyOn(
+      CompanionAPI.prototype as unknown as CompanionApiLifecycleTestAccess,
+      'sessionStart'
+    ).mockResolvedValue();
+    vi.spyOn(
+      CompanionAPI.prototype as unknown as CompanionApiLifecycleTestAccess,
+      'gracefulDisconnect'
+    ).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDisconnect = resolve;
+        })
+    );
+    vi.spyOn(CompanionConnection.prototype, 'close').mockImplementation(() => undefined);
+    const api = new CompanionAPI('127.0.0.1', 12345);
+
+    await api.connect();
+    const disconnect = api.disconnect();
+    const reconnect = api.connect();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    releaseDisconnect?.();
+    await disconnect;
+    await reconnect;
+
     expect(start).toHaveBeenCalledTimes(2);
     await api.disconnect();
   });

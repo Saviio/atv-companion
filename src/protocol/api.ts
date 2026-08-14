@@ -117,14 +117,15 @@ export class CompanionAPI extends EventEmitter {
    * Connect to Apple TV
    */
   async connect(options?: CompanionOperationOptions): Promise<void> {
+    if (this.disconnectPromise) {
+      await this.disconnectPromise;
+      throwIfAborted(options?.signal);
+    }
     if (this.connected) {
       return;
     }
     if (this.connectPromise) {
       return this.connectPromise;
-    }
-    if (this.disconnectPromise) {
-      await this.disconnectPromise;
     }
 
     this.connectPromise = this.performConnect(options);
@@ -277,9 +278,12 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Press and release a button
    */
-  async pressButton(command: HidCommand): Promise<void> {
-    await this.hidCommand(true, command);
-    await this.hidCommand(false, command);
+  async pressButton(
+    command: HidCommand,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
+    await this.hidCommand(true, command, options);
+    await this.hidCommand(false, command, options);
   }
 
   /**
@@ -287,12 +291,13 @@ export class CompanionAPI extends EventEmitter {
    */
   async mediaControlCommand(
     command: MediaControlCommand,
-    args?: Record<string, unknown>
+    args?: Record<string, unknown>,
+    options?: CompanionOperationOptions
   ): Promise<Record<string, unknown>> {
     return this.sendCommand('_mcc', {
       _mcc: command,
       ...args,
-    });
+    }, options);
   }
 
   /**
@@ -316,15 +321,15 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Play media
    */
-  async play(): Promise<void> {
-    await this.mediaControlCommand(MediaControlCommand.Play);
+  async play(options?: CompanionOperationOptions): Promise<void> {
+    await this.mediaControlCommand(MediaControlCommand.Play, undefined, options);
   }
 
   /**
    * Pause media
    */
-  async pause(): Promise<void> {
-    await this.mediaControlCommand(MediaControlCommand.Pause);
+  async pause(options?: CompanionOperationOptions): Promise<void> {
+    await this.mediaControlCommand(MediaControlCommand.Pause, undefined, options);
   }
 
   /**
