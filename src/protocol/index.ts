@@ -29,3 +29,5 @@ export {
   SystemStatus,
   TouchAction,
 } from './api.js';
+
+export type { CompanionOperationOptions } from './operation.js';

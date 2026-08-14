@@ -12,11 +12,17 @@ import { pack as opackPack, unpack as opackUnpack } from '../support/opack.js';
 import { SRPAuthHandler } from '../auth/srp.js';
 import { writeTlv, readTlv, TlvValue } from '../support/tlv8.js';
 import type { HapCredentials } from '../auth/credentials.js';
+import {
+  abortError,
+  operationSignal,
+  operationTimeoutMs,
+  throwIfAborted,
+  timeoutError,
+  type CompanionOperationOptions,
+} from './operation.js';
 
 const AUTH_FRAMES = [FrameType.PS_Start, FrameType.PS_Next, FrameType.PV_Start, FrameType.PV_Next];
 const OPACK_FRAMES = [FrameType.U_OPACK, FrameType.E_OPACK, FrameType.P_OPACK];
-
-const DEFAULT_TIMEOUT = 5000; // milliseconds
 
 export const SRP_SALT = '';
 export const SRP_OUTPUT_INFO = 'ClientEncrypt-main';
@@ -37,6 +43,7 @@ interface PendingRequest {
   resolve: (data: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  cleanup: () => void;
 }
 
 /**
@@ -53,31 +60,51 @@ export class CompanionProtocol extends EventEmitter {
   ) {
     super();
     this.connection.on('frame', (frameType, data) => this.handleFrame(frameType, data));
+    this.connection.on('error', (error) => this.handleConnectionFailure(error));
+    this.connection.on('disconnected', (error) => {
+      const reason = error ?? new Error('Connection closed');
+      const wasActive = this.isStarted || this.queues.size > 0;
+      this.handleConnectionFailure(reason);
+      if (wasActive) {
+        this.emit('disconnected', error);
+      }
+    });
   }
 
   /**
    * Connect to device and set up encryption if credentials provided
    */
-  async start(credentials?: HapCredentials): Promise<void> {
+  async start(
+    credentials?: HapCredentials,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
     if (this.isStarted) {
       throw new Error('Already started');
     }
 
     this.isStarted = true;
-    await this.connection.connect();
+    try {
+      throwIfAborted(options?.signal);
+      await this.connection.connect(options);
 
-    if (credentials) {
-      await this.setupEncryption(credentials);
+      if (credentials) {
+        await this.setupEncryption(credentials, options);
+      }
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      this.stop(normalized);
+      throw normalized;
     }
   }
 
   /**
    * Disconnect from device
    */
-  stop(): void {
+  stop(reason: Error = new Error('Protocol stopped')): void {
     for (const [, pending] of this.queues) {
       clearTimeout(pending.timeout);
-      pending.reject(new Error('Protocol stopped'));
+      pending.cleanup();
+      pending.reject(reason);
     }
     this.queues.clear();
     this.connection.close();
@@ -87,7 +114,11 @@ export class CompanionProtocol extends EventEmitter {
   /**
    * Set up encryption using pair-verify procedure
    */
-  private async setupEncryption(credentials: HapCredentials): Promise<void> {
+  private async setupEncryption(
+    credentials: HapCredentials,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
+    throwIfAborted(options?.signal);
     const [, publicKey] = this.srp.initialize();
 
     // PV_Start - send our public key using proper TLV format
@@ -99,7 +130,7 @@ export class CompanionProtocol extends EventEmitter {
         ])
       ),
       _auTy: 4,
-    });
+    }, options);
 
     const pairingData1 = this.getPairingData(resp1);
     const serverPubKey = pairingData1.get(TlvValue.PublicKey);
@@ -120,7 +151,7 @@ export class CompanionProtocol extends EventEmitter {
           [TlvValue.EncryptedData, encryptedData],
         ])
       ),
-    });
+    }, options);
 
     // Derive encryption keys
     const [outputKey, inputKey] = this.srp.verify2(SRP_SALT, SRP_OUTPUT_INFO, SRP_INPUT_INFO);
@@ -133,7 +164,7 @@ export class CompanionProtocol extends EventEmitter {
   async exchangeAuth(
     frameType: FrameType,
     data: Record<string, unknown>,
-    timeout: number = DEFAULT_TIMEOUT
+    options?: CompanionOperationOptions | number
   ): Promise<Record<string, unknown>> {
     // Auth frames use *_Next for response
     let identifier: FrameType;
@@ -144,7 +175,7 @@ export class CompanionProtocol extends EventEmitter {
     } else {
       identifier = frameType;
     }
-    return this.exchangeGenericOpack(frameType, data, identifier, timeout);
+    return this.exchangeGenericOpack(frameType, data, identifier, options);
   }
 
   /**
@@ -153,12 +184,12 @@ export class CompanionProtocol extends EventEmitter {
   async exchangeOpack(
     frameType: FrameType,
     data: Record<string, unknown>,
-    timeout: number = DEFAULT_TIMEOUT
+    options?: CompanionOperationOptions | number
   ): Promise<Record<string, unknown>> {
     data._x = this.xid;
     const identifier = this.xid;
     this.xid++;
-    return this.exchangeGenericOpack(frameType, data, identifier, timeout);
+    return this.exchangeGenericOpack(frameType, data, identifier, options);
   }
 
   /**
@@ -175,16 +206,44 @@ export class CompanionProtocol extends EventEmitter {
     frameType: FrameType,
     data: Record<string, unknown>,
     identifier: FrameIdType,
-    timeout: number
+    options?: CompanionOperationOptions | number
   ): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.queues.delete(identifier);
-        reject(new Error(`Timeout waiting for response (${timeout}ms)`));
-      }, timeout);
+    const timeoutMs = operationTimeoutMs(options);
+    const signal = operationSignal(options);
 
-      this.queues.set(identifier, { resolve, reject, timeout: timeoutId });
-      this.connection.send(frameType, opackPack(data));
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError(signal));
+        return;
+      }
+
+      const cleanup = (): void => {
+        signal?.removeEventListener('abort', handleAbort);
+      };
+      const handleAbort = (): void => {
+        this.stop(abortError(signal));
+      };
+      const timeoutId = setTimeout(() => {
+        this.stop(timeoutError(timeoutMs));
+      }, timeoutMs);
+
+      signal?.addEventListener('abort', handleAbort, { once: true });
+      this.queues.set(identifier, {
+        resolve,
+        reject,
+        timeout: timeoutId,
+        cleanup,
+      });
+      try {
+        this.connection.send(frameType, opackPack(data));
+      } catch (error) {
+        this.queues.delete(identifier);
+        clearTimeout(timeoutId);
+        cleanup();
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.stop(normalized);
+        reject(normalized);
+      }
     });
   }
 
@@ -208,7 +267,9 @@ export class CompanionProtocol extends EventEmitter {
         this.handleOpack(record);
       }
     } catch (err) {
-      this.emit('error', err);
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', err);
+      }
     }
   }
 
@@ -217,6 +278,7 @@ export class CompanionProtocol extends EventEmitter {
     if (pending) {
       this.queues.delete(frameType);
       clearTimeout(pending.timeout);
+      pending.cleanup();
       pending.resolve(data);
     }
   }
@@ -232,6 +294,7 @@ export class CompanionProtocol extends EventEmitter {
       if (pending) {
         this.queues.delete(xid);
         clearTimeout(pending.timeout);
+        pending.cleanup();
 
         if ('_em' in data) {
           pending.reject(new Error(`Command failed: ${data._em}`));
@@ -239,6 +302,16 @@ export class CompanionProtocol extends EventEmitter {
           pending.resolve(data);
         }
       }
+    }
+  }
+
+  private handleConnectionFailure(error: Error): void {
+    if (!this.isStarted && this.queues.size === 0) {
+      return;
+    }
+    this.stop(error);
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', error);
     }
   }
 

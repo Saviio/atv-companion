@@ -11,6 +11,10 @@ import { CompanionConnection, FrameType } from './connection.js';
 import { CompanionProtocol, MessageType } from './protocol.js';
 import { SRPAuthHandler } from '../auth/srp.js';
 import type { HapCredentials } from '../auth/credentials.js';
+import {
+  throwIfAborted,
+  type CompanionOperationOptions,
+} from './operation.js';
 
 /**
  * HID command constants
@@ -89,6 +93,13 @@ export class CompanionAPI extends EventEmitter {
   private subscribedEvents: string[] = [];
   private sid = 0;
   private baseTimestamp = Date.now();
+  private connectPromise: Promise<void> | null = null;
+  private disconnectPromise: Promise<void> | null = null;
+  private protocolEventListener:
+    | ((name: string, data: Record<string, unknown>) => void)
+    | null = null;
+  private protocolErrorListener: ((error: Error) => void) | null = null;
+  private protocolDisconnectedListener: ((error?: Error) => void) | null = null;
 
   constructor(
     public readonly host: string,
@@ -98,57 +109,116 @@ export class CompanionAPI extends EventEmitter {
     super();
   }
 
+  get connected(): boolean {
+    return Boolean(this.protocol && this.connection?.connected);
+  }
+
   /**
    * Connect to Apple TV
    */
-  async connect(): Promise<void> {
-    if (this.protocol) {
+  async connect(options?: CompanionOperationOptions): Promise<void> {
+    if (this.connected) {
       return;
     }
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+    if (this.disconnectPromise) {
+      await this.disconnectPromise;
+    }
 
-    this.connection = new CompanionConnection(this.host, this.port);
-    const srp = new SRPAuthHandler();
-    this.protocol = new CompanionProtocol(this.connection, srp);
+    this.connectPromise = this.performConnect(options);
+    try {
+      await this.connectPromise;
+    } finally {
+      this.connectPromise = null;
+    }
+  }
 
-    this.protocol.on('event', (name: string, data: Record<string, unknown>) => {
+  private async performConnect(options?: CompanionOperationOptions): Promise<void> {
+    this.resetTransport();
+    throwIfAborted(options?.signal);
+
+    const connection = new CompanionConnection(this.host, this.port);
+    const protocol = new CompanionProtocol(connection, new SRPAuthHandler());
+    this.connection = connection;
+    this.protocol = protocol;
+
+    this.protocolEventListener = (name, data) => {
       this.emit('event', name, data);
-    });
+    };
+    this.protocolErrorListener = (error) => {
+      this.emitIfObserved('error', error);
+    };
+    this.protocolDisconnectedListener = (error) => {
+      this.emit('disconnected', error);
+    };
+    protocol.on('event', this.protocolEventListener);
+    protocol.on('error', this.protocolErrorListener);
+    protocol.on('disconnected', this.protocolDisconnectedListener);
 
-    await this.protocol.start(this.credentials);
-
-    await this.systemInfo();
-    await this.touchStart();
-    await this.sessionStart();
-    await this.subscribeEvent('_iMC');
+    try {
+      await protocol.start(this.credentials, options);
+      await this.systemInfo(options);
+      await this.touchStart(options);
+      await this.sessionStart(options);
+      await this.subscribeEvent('_iMC', options);
+    } catch (error) {
+      this.resetTransport();
+      throw error;
+    }
   }
 
   /**
    * Disconnect from Apple TV
    */
   async disconnect(): Promise<void> {
-    if (!this.protocol) {
+    if (this.disconnectPromise) {
+      return this.disconnectPromise;
+    }
+    if (!this.protocol && !this.connection) {
       return;
     }
 
+    this.disconnectPromise = this.performDisconnect();
     try {
-      for (const event of this.subscribedEvents) {
-        await this.unsubscribeEvent(event);
-      }
-      await this.sessionStop();
-      await this.touchStop();
-    } catch {
-      // Ignore errors during disconnect
+      await this.disconnectPromise;
     } finally {
-      this.protocol.stop();
-      this.protocol = null;
-      this.connection = null;
+      this.disconnectPromise = null;
     }
+  }
+
+  private async performDisconnect(): Promise<void> {
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.gracefulDisconnect(),
+        new Promise<void>((resolve) => {
+          forceTimer = setTimeout(resolve, 1_000);
+        }),
+      ]);
+    } catch {
+      // Best-effort graceful shutdown. Transport cleanup below is authoritative.
+    } finally {
+      if (forceTimer) {
+        clearTimeout(forceTimer);
+      }
+      this.resetTransport();
+    }
+  }
+
+  private async gracefulDisconnect(): Promise<void> {
+    for (const event of [...this.subscribedEvents]) {
+      await this.unsubscribeEvent(event, { timeoutMs: 750 });
+    }
+    await this.sessionStop({ timeoutMs: 750 });
+    await this.touchStop({ timeoutMs: 750 });
   }
 
   /**
    * Send system information to device
    */
-  async systemInfo(): Promise<void> {
+  async systemInfo(options?: CompanionOperationOptions): Promise<void> {
     await this.sendCommand('_systemInfo', {
       _bf: 0,
       _cf: 512,
@@ -160,16 +230,19 @@ export class CompanionAPI extends EventEmitter {
       _sv: '170.18',
       model: 'iPhone',
       name: 'atv-companion',
-    });
+    }, options);
   }
 
   /**
    * Launch an app by bundle ID or URL
    */
-  async launchApp(bundleIdOrUrl: string): Promise<void> {
+  async launchApp(
+    bundleIdOrUrl: string,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
     const isUrl = bundleIdOrUrl.includes('://') || bundleIdOrUrl.includes(':');
     const key = isUrl ? '_urlS' : '_bundleID';
-    await this.sendCommand('_launchApp', { [key]: bundleIdOrUrl });
+    await this.sendCommand('_launchApp', { [key]: bundleIdOrUrl }, options);
   }
 
   /**
@@ -182,11 +255,23 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Send HID command (button press)
    */
-  async hidCommand(down: boolean, command: HidCommand): Promise<void> {
+  async hidCommand(
+    down: boolean,
+    command: HidCommand,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
     await this.sendCommand('_hidC', {
       _hBtS: down ? 1 : 2,
       _hidC: command,
-    });
+    }, options);
+  }
+
+  async wake(options?: CompanionOperationOptions): Promise<void> {
+    await this.hidCommand(false, HidCommand.Wake, options);
+  }
+
+  async sleep(options?: CompanionOperationOptions): Promise<void> {
+    await this.hidCommand(false, HidCommand.Sleep, options);
   }
 
   /**
@@ -259,8 +344,10 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Get system status (awake, asleep, etc.)
    */
-  async fetchAttentionState(): Promise<SystemStatus> {
-    const resp = await this.sendCommand('FetchAttentionState', {});
+  async fetchAttentionState(
+    options?: CompanionOperationOptions
+  ): Promise<SystemStatus> {
+    const resp = await this.sendCommand('FetchAttentionState', {}, options);
     const content = resp._c as Record<string, unknown>;
     return (content?.state as SystemStatus) || SystemStatus.Unknown;
   }
@@ -268,9 +355,12 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Subscribe to event updates
    */
-  async subscribeEvent(event: string): Promise<void> {
+  async subscribeEvent(
+    event: string,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
     if (!this.subscribedEvents.includes(event)) {
-      await this.sendEvent('_interest', { _regEvents: [event] });
+      await this.sendEvent('_interest', { _regEvents: [event] }, options);
       this.subscribedEvents.push(event);
     }
   }
@@ -278,48 +368,52 @@ export class CompanionAPI extends EventEmitter {
   /**
    * Unsubscribe from event updates
    */
-  async unsubscribeEvent(event: string): Promise<void> {
+  async unsubscribeEvent(
+    event: string,
+    options?: CompanionOperationOptions
+  ): Promise<void> {
     const index = this.subscribedEvents.indexOf(event);
     if (index !== -1) {
-      await this.sendEvent('_interest', { _deregEvents: [event] });
+      await this.sendEvent('_interest', { _deregEvents: [event] }, options);
       this.subscribedEvents.splice(index, 1);
     }
   }
 
-  private async sessionStart(): Promise<void> {
+  private async sessionStart(options?: CompanionOperationOptions): Promise<void> {
     const localSid = Math.floor(Math.random() * 0xffffffff);
     const resp = await this.sendCommand('_sessionStart', {
       _srvT: 'com.apple.tvremoteservices',
       _sid: localSid,
-    });
+    }, options);
     const content = resp._c as Record<string, unknown>;
     const remoteSid = (content?._sid as number) || 0;
     this.sid = (remoteSid * 0x100000000) + localSid;
   }
 
-  private async sessionStop(): Promise<void> {
+  private async sessionStop(options?: CompanionOperationOptions): Promise<void> {
     await this.sendCommand('_sessionStop', {
       _srvT: 'com.apple.tvremoteservices',
       _sid: this.sid,
-    });
+    }, options);
   }
 
-  private async touchStart(): Promise<void> {
+  private async touchStart(options?: CompanionOperationOptions): Promise<void> {
     this.baseTimestamp = Date.now();
     await this.sendCommand('_touchStart', {
       _height: TOUCHPAD_HEIGHT,
       _tFl: 0,
       _width: TOUCHPAD_WIDTH,
-    });
+    }, options);
   }
 
-  private async touchStop(): Promise<void> {
-    await this.sendCommand('_touchStop', { _i: 1 });
+  private async touchStop(options?: CompanionOperationOptions): Promise<void> {
+    await this.sendCommand('_touchStop', { _i: 1 }, options);
   }
 
   private async sendCommand(
     identifier: string,
-    content: Record<string, unknown>
+    content: Record<string, unknown>,
+    options?: CompanionOperationOptions
   ): Promise<Record<string, unknown>> {
     if (!this.protocol) {
       throw new Error('Not connected');
@@ -329,21 +423,54 @@ export class CompanionAPI extends EventEmitter {
       _i: identifier,
       _t: MessageType.Request,
       _c: content,
-    });
+    }, options);
   }
 
   private async sendEvent(
     identifier: string,
-    content: Record<string, unknown>
+    content: Record<string, unknown>,
+    options?: CompanionOperationOptions
   ): Promise<void> {
     if (!this.protocol) {
       throw new Error('Not connected');
     }
 
+    throwIfAborted(options?.signal);
     this.protocol.sendOpack(FrameType.E_OPACK, {
       _i: identifier,
       _t: MessageType.Event,
       _c: content,
     });
+  }
+
+  private resetTransport(): void {
+    const protocol = this.protocol;
+    if (protocol) {
+      if (this.protocolEventListener) {
+        protocol.removeListener('event', this.protocolEventListener);
+      }
+      if (this.protocolErrorListener) {
+        protocol.removeListener('error', this.protocolErrorListener);
+      }
+      if (this.protocolDisconnectedListener) {
+        protocol.removeListener('disconnected', this.protocolDisconnectedListener);
+      }
+      protocol.stop();
+    } else {
+      this.connection?.close();
+    }
+    this.protocol = null;
+    this.connection = null;
+    this.protocolEventListener = null;
+    this.protocolErrorListener = null;
+    this.protocolDisconnectedListener = null;
+    this.subscribedEvents = [];
+    this.sid = 0;
+  }
+
+  private emitIfObserved(event: string, error: Error): void {
+    if (this.listenerCount(event) > 0) {
+      this.emit(event, error);
+    }
   }
 }

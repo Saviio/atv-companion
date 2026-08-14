@@ -8,6 +8,8 @@
 import { Bonjour, type Service, type Browser } from 'bonjour-service';
 import { EventEmitter } from 'events';
 
+import { abortError } from '../protocol/operation.js';
+
 /**
  * Discovered Apple TV device
  */
@@ -32,6 +34,8 @@ export interface AppleTVDevice {
 export interface ScannerOptions {
   /** Timeout in milliseconds (default: 5000) */
   timeout?: number;
+  /** Optional cancellation signal */
+  signal?: AbortSignal;
 }
 
 /** Companion protocol service type */
@@ -177,11 +181,41 @@ export class AppleTVScanner extends EventEmitter {
  * ```
  */
 export async function scan(options: ScannerOptions = {}): Promise<AppleTVDevice[]> {
-  const { timeout = 5000 } = options;
+  const { timeout = 5000, signal } = options;
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
     const scanner = new AppleTVScanner();
     const devices: AppleTVDevice[] = [];
+    let completed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener('abort', handleAbort);
+      scanner.destroy();
+    };
+    const complete = (): void => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      cleanup();
+      resolve(devices);
+    };
+    const handleAbort = (): void => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      cleanup();
+      reject(abortError(signal));
+    };
 
     scanner.on('device', (device: AppleTVDevice) => {
       // Avoid duplicates
@@ -190,12 +224,9 @@ export async function scan(options: ScannerOptions = {}): Promise<AppleTVDevice[
       }
     });
 
+    signal?.addEventListener('abort', handleAbort, { once: true });
     scanner.start();
-
-    setTimeout(() => {
-      scanner.destroy();
-      resolve(devices);
-    }, timeout);
+    timer = setTimeout(complete, timeout);
   });
 }
 

@@ -9,6 +9,14 @@
 import { Socket } from 'net';
 import { EventEmitter } from 'events';
 import { Chacha20Cipher } from '../support/chacha20.js';
+import { ConnectionError } from '../errors.js';
+import {
+  abortError,
+  operationSignal,
+  operationTimeoutMs,
+  timeoutError,
+  type CompanionOperationOptions,
+} from './operation.js';
 
 const AUTH_TAG_LENGTH = 16;
 const HEADER_LENGTH = 4;
@@ -68,28 +76,85 @@ export class CompanionConnection extends EventEmitter {
   /**
    * Connect to device
    */
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.socket = new Socket();
+  connect(options?: CompanionOperationOptions): Promise<void> {
+    if (this.connected) {
+      return Promise.resolve();
+    }
 
-      this.socket.once('connect', () => {
+    const timeoutMs = operationTimeoutMs(options);
+    const signal = operationSignal(options);
+
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError(signal));
+        return;
+      }
+
+      const socket = new Socket();
+      this.socket = socket;
+      let settled = false;
+
+      const cleanupConnectListeners = (): void => {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', handleAbort);
+        socket.removeListener('connect', handleConnect);
+        socket.removeListener('error', handleConnectError);
+        socket.removeListener('close', handleConnectClose);
+      };
+      const fail = (error: Error): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupConnectListeners();
+        socket.destroy();
+        if (this.socket === socket) {
+          this.socket = null;
+        }
+        reject(error);
+      };
+      const handleConnect = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupConnectListeners();
         this.emit('connected');
         resolve();
+      };
+      const handleConnectError = (error: Error): void => {
+        fail(new ConnectionError(error.message));
+      };
+      const handleConnectClose = (): void => {
+        fail(new ConnectionError('Connection closed before it was established'));
+      };
+      const handleAbort = (): void => {
+        fail(abortError(signal));
+      };
+      const timeout = setTimeout(() => {
+        fail(timeoutError(timeoutMs));
+      }, timeoutMs);
+
+      socket.once('connect', handleConnect);
+      socket.once('error', handleConnectError);
+      socket.once('close', handleConnectClose);
+
+      signal?.addEventListener('abort', handleAbort, { once: true });
+
+      socket.on('data', (data) => this.handleData(data));
+      socket.on('error', (error) => {
+        if (settled && this.listenerCount('error') > 0) {
+          this.emit('error', error);
+        }
       });
-
-      this.socket.once('error', (err) => {
-        this.emit('error', err);
-        reject(err);
-      });
-
-      this.socket.on('data', (data) => this.handleData(data));
-
-      this.socket.on('close', (hadError) => {
-        this.socket = null;
+      socket.on('close', (hadError) => {
+        if (this.socket === socket) {
+          this.socket = null;
+        }
         this.emit('disconnected', hadError ? new Error('Connection closed with error') : undefined);
       });
 
-      this.socket.connect(this.port, this.host);
+      socket.connect(this.port, this.host);
     });
   }
 
@@ -101,6 +166,8 @@ export class CompanionConnection extends EventEmitter {
       this.socket.destroy();
       this.socket = null;
     }
+    this.buffer = Buffer.alloc(0);
+    this.chacha = null;
   }
 
   /**

@@ -20,6 +20,7 @@ export {
   SystemStatus,
   TouchAction,
 } from './protocol/index.js';
+export type { CompanionOperationOptions } from './protocol/index.js';
 
 // Authentication
 export { SRPAuthHandler } from './auth/srp.js';
@@ -38,6 +39,16 @@ export {
   x25519SharedSecret,
   hkdfExpand,
 } from './support/crypto.js';
+export {
+  DEFAULT_WAKE_COMPATIBILITY_PORTS,
+  knock,
+} from './support/knock.js';
+export type {
+  CompanionKnockOptions,
+  CompanionKnockPortResult,
+  CompanionKnockPortStatus,
+  CompanionKnockResult,
+} from './support/knock.js';
 
 // Errors
 export {
@@ -46,6 +57,7 @@ export {
   AuthenticationError,
   PairingError,
   TimeoutError,
+  AbortError,
 } from './errors.js';
 
 // Scanner

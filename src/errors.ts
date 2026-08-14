@@ -53,6 +53,16 @@ export class TimeoutError extends ATVError {
 }
 
 /**
+ * Operation cancellation errors
+ */
+export class AbortError extends ATVError {
+  constructor(message = 'Operation aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/**
  * Protocol errors
  */
 export class ProtocolError extends ATVError {
