@@ -219,4 +219,20 @@ describe('CompanionConnection', () => {
     await disconnectedPromise;
     expect(conn.connected).toBe(false);
   });
+
+  it('should return sockets and listeners to baseline over repeated connect cycles', async () => {
+    for (let index = 0; index < 50; index += 1) {
+      const conn = new CompanionConnection('127.0.0.1', serverPort);
+      await conn.connect({ timeoutMs: 500 });
+      const disconnected = new Promise<void>((resolve) => {
+        conn.once('disconnected', resolve);
+      });
+
+      conn.close();
+      await disconnected;
+
+      expect(conn.connected).toBe(false);
+      expect(conn.listenerCount('disconnected')).toBe(0);
+    }
+  });
 });

@@ -164,6 +164,7 @@ export class AppleTVScanner extends EventEmitter {
   destroy(): void {
     this.stop();
     this.bonjour.destroy();
+    this.removeAllListeners();
   }
 }
 
@@ -225,8 +226,14 @@ export async function scan(options: ScannerOptions = {}): Promise<AppleTVDevice[
     });
 
     signal?.addEventListener('abort', handleAbort, { once: true });
-    scanner.start();
-    timer = setTimeout(complete, timeout);
+    try {
+      scanner.start();
+      timer = setTimeout(complete, timeout);
+    } catch (error) {
+      completed = true;
+      cleanup();
+      reject(error);
+    }
   });
 }
 

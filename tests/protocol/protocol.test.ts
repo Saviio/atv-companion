@@ -71,4 +71,28 @@ describe('CompanionProtocol lifecycle', () => {
     expect(disconnected).toHaveBeenCalledOnce();
     expect(connection.close).toHaveBeenCalledOnce();
   });
+
+  it('returns pending request state to baseline after repeated cancellation', async () => {
+    for (let index = 0; index < 50; index += 1) {
+      const connection = new ProtocolTestConnection();
+      const protocol = new CompanionProtocol(
+        connection as unknown as CompanionConnection
+      );
+      const controller = new AbortController();
+      const exchange = protocol.exchangeOpack(
+        FrameType.E_OPACK,
+        { _i: `test-${index}` },
+        { timeoutMs: 1_000, signal: controller.signal }
+      );
+
+      controller.abort(new Error('cancelled'));
+
+      await expect(exchange).rejects.toMatchObject({ name: 'AbortError' });
+      expect(
+        (protocol as unknown as { queues: Map<unknown, unknown> }).queues.size
+      ).toBe(0);
+      expect(controller.signal.onabort).toBeNull();
+      expect(connection.close).toHaveBeenCalledOnce();
+    }
+  });
 });

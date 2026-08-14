@@ -41,6 +41,16 @@ describe('AppleTVScanner', () => {
     await expect(scanning).rejects.toMatchObject({ name: 'AbortError' });
     expect(destroy).toHaveBeenCalledOnce();
   });
+
+  it('destroys scanner resources when startup fails', async () => {
+    vi.spyOn(AppleTVScanner.prototype, 'start').mockImplementation(() => {
+      throw new Error('startup failed');
+    });
+    const destroy = vi.spyOn(AppleTVScanner.prototype, 'destroy');
+
+    await expect(scan()).rejects.toThrow('startup failed');
+    expect(destroy).toHaveBeenCalledOnce();
+  });
 });
 
 describe('supportsPairing', () => {
